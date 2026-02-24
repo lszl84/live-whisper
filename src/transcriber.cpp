@@ -81,7 +81,20 @@ std::string Transcriber::Impl::run_whisper(const std::vector<float>& audio) {
         const char* s = whisper_full_get_segment_text(ctx, i);
         if (s) text += s;
     }
-    return text;
+
+    // Strip hallucinated noise labels like [BLANK_AUDIO], (wind blowing), etc.
+    std::string clean;
+    clean.reserve(text.size());
+    size_t i = 0;
+    while (i < text.size()) {
+        if (text[i] == '[' || text[i] == '(') {
+            char close = (text[i] == '[') ? ']' : ')';
+            size_t end = text.find(close, i + 1);
+            if (end != std::string::npos) { i = end + 1; continue; }
+        }
+        clean += text[i++];
+    }
+    return clean;
 }
 
 // ---------------------------------------------------------------------------
