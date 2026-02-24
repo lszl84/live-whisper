@@ -72,15 +72,16 @@ bind = $mod, V, exec, ~/.local/bin/live-whisper
 | EGL + OpenGL ES 3.0        | Rendering backend                           |
 | libxkbcommon               | Keyboard/keymap handling                    |
 
-** Streaming via Chunk Commit
+** Streaming via Re-transcription
 
-whisper.cpp is batch-oriented. Live transcription is achieved by processing
-audio in chunks:
+whisper.cpp is batch-oriented. Live transcription is achieved by
+re-transcribing a growing audio buffer on a background thread:
 
-- Accumulate audio and run =whisper_full()= every ~2 seconds
-- Each chunk's text is committed immediately (append-only, never re-transcribed)
-- Prompt tokens from the last segment carry forward for context continuity
-- A 0.5s audio overlap between chunks ensures smooth boundaries
+- Audio is captured on the main thread and appended to a shared buffer
+- A background thread runs =whisper_full()= every ~400ms on the full buffer
+- Each pass overwrites the previous partial text, so repetition loops self-correct
+- After 25 seconds the partial text is committed and the buffer is cleared
+- Hallucinated noise labels (=[BLANK_AUDIO]=, =(wind blowing)=, etc.) are stripped
 
 ** Source Layout
 
@@ -88,12 +89,14 @@ audio in chunks:
 src/
   main.cpp                  — entry point and event loop
   audio.h / audio.cpp       — miniaudio capture + ring buffer
-  transcriber.h / .cpp      — whisper.cpp sliding window engine
+  transcriber.h / .cpp      — whisper.cpp streaming inference engine
   overlay.h / overlay.cpp   — Wayland layer-shell surface + EGL + input
   imgui_impl_wayland.h/.cpp — custom ImGui platform backend for Wayland
   paste.h / paste.cpp       — virtual keyboard typing + hyprctl focus
+  font.h / font.cpp         — embedded font loading
 protocol/
   wlr-layer-shell-unstable-v1.xml
+  wlr-virtual-keyboard-unstable-v1.xml
   virtual-keyboard-unstable-v1.xml
 #+end_src
 
