@@ -455,7 +455,7 @@ bool Overlay::init(int height)
     // Compute overlay size: half the logical output width, centered at bottom
     int logical_output_w = impl_->output_width / impl_->scale_factor;
     int overlay_w = logical_output_w / 2;
-    if (overlay_w < 400) overlay_w = 400;  // minimum usable width
+    if (overlay_w < 600) overlay_w = 600;  // minimum usable width
     int margin_bottom = 32;
 
     // Create layer surface

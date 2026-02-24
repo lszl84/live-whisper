@@ -10,13 +10,15 @@
 
 #include <GLES3/gl3.h>
 
+#include <chrono>
 #include <cstdio>
+#include <thread>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
-static constexpr int    OVERLAY_HEIGHT = 200;
+static constexpr int    OVERLAY_HEIGHT = 350;
 static constexpr int    SAMPLE_RATE    = 16000;
 static constexpr int    READ_BUF_SIZE  = SAMPLE_RATE / 10;  // 100ms chunks
 static constexpr float  BASE_FONT_SIZE = 10.0f;
@@ -41,7 +43,7 @@ static void apply_style(float scale)
 
     // Colors — dark translucent overlay
     auto& c = style.Colors;
-    c[ImGuiCol_WindowBg]          = ImVec4(0.08f, 0.08f, 0.10f, 0.95f);
+    c[ImGuiCol_WindowBg]          = ImVec4(0.08f, 0.08f, 0.10f, 1.00f);
     c[ImGuiCol_Border]            = ImVec4(0.20f, 0.20f, 0.25f, 0.50f);
 
     // Text
@@ -119,6 +121,7 @@ int main()
     static char text_buf[64 * 1024] = {};
     bool accepted = false;
     bool user_edited = false;
+    bool auto_enter = true;
     std::string last_transcription;
 
     // Audio read buffer
@@ -193,7 +196,8 @@ int main()
         float text_height = ImGui::GetContentRegionAvail().y - status_height;
         if (ImGui::InputTextMultiline("##text", text_buf, sizeof(text_buf),
                                       ImVec2(-1.0f, text_height),
-                                      ImGuiInputTextFlags_AllowTabInput)) {
+                                      ImGuiInputTextFlags_AllowTabInput |
+                                      ImGuiInputTextFlags_WordWrap)) {
             // User typed or edited — stop auto-updating
             user_edited = true;
         }
@@ -203,6 +207,18 @@ int main()
         int mins = static_cast<int>(secs) / 60;
         int s    = static_cast<int>(secs) % 60;
         ImGui::TextDisabled("Recording %d:%02d", mins, s);
+
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX()
+                        - ImGui::CalcTextSize("Send Enter").x - ImGui::GetFrameHeight()
+                        - ImGui::GetStyle().ItemSpacing.x);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.50f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.45f, 0.45f, 0.50f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.15f, 0.15f, 0.18f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.20f, 0.20f, 0.24f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 3.0f));
+        ImGui::Checkbox("Send Enter", &auto_enter);
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(4);
 
         ImGui::End();
 
@@ -228,6 +244,10 @@ int main()
     // Type text if accepted (overlay is gone, target window can receive input)
     if (accepted && text_buf[0] != '\0') {
         paste::refocus_and_type(focus_addr, text_buf);
+        if (auto_enter) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            paste::type_text("\n");
+        }
     }
 
     return 0;
