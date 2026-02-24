@@ -1,8 +1,12 @@
 #+TITLE: live-whisper
 #+OPTIONS: toc:nil num:nil
 
-Speech-to-text overlay for Hyprland. Press a hotkey, speak, and paste the
-transcribed text into any window.
+Speech-to-text overlay for Hyprland. Press a hotkey, speak, and the
+transcribed text is typed into the previously focused window. No need to hold
+any button — just talk and watch the transcription appear in real time. Edit it
+if needed, hit Enter to send (with optional automatic Enter keypress), or
+Escape to cancel. Great for dictating into chat, filling in forms, or talking
+to coding agents without touching the keyboard.
 
 [[https://github.com/lszl84/live-whisper/raw/main/demo.gif]]
 
@@ -41,10 +45,19 @@ via CMake FetchContent.
 
 Runtime: =hyprctl= (included with Hyprland).
 
+* Installation
+
+#+begin_src sh
+cmake --install build --prefix ~/.local
+#+end_src
+
+This installs the binary to =~/.local/bin/= and the model to
+=~/.local/share/live-whisper/=.
+
 * Hyprland Configuration
 
 #+begin_src conf
-bind = $mod, V, exec, ~/Developer/live-whisper/build/live-whisper
+bind = $mod, V, exec, ~/.local/bin/live-whisper
 #+end_src
 
 * Architecture
