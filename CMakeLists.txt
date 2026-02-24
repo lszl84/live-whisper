@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(live-whisper LANGUAGES C CXX)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
 
 # ---------------------------------------------------------------------------
 # System dependencies
@@ -160,7 +163,7 @@ add_custom_target(generate_font ALL DEPENDS ${GEN_DIR}/gen_font.cpp)
 # ---------------------------------------------------------------------------
 # Model download
 # ---------------------------------------------------------------------------
-set(MODEL_DIR  ${CMAKE_SOURCE_DIR}/models)
+set(MODEL_DIR  ${CMAKE_BINARY_DIR}/models)
 set(MODEL_FILE ${MODEL_DIR}/ggml-tiny.bin)
 
 if(NOT EXISTS ${MODEL_FILE})
@@ -209,3 +212,13 @@ target_link_libraries(live-whisper PRIVATE
     dl
     m
 )
+
+target_compile_definitions(live-whisper PRIVATE
+    LIVE_WHISPER_DATADIR="${CMAKE_INSTALL_FULL_DATAROOTDIR}/live-whisper"
+)
+
+# ---------------------------------------------------------------------------
+# Install rules
+# ---------------------------------------------------------------------------
+install(TARGETS live-whisper RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES ${MODEL_FILE} DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/live-whisper)

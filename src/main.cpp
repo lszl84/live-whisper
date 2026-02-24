@@ -12,11 +12,63 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 #include <xkbcommon/xkbcommon-keysyms.h>
+
+static constexpr const char* MODEL_NAME = "ggml-tiny.bin";
+
+static bool file_exists(const std::string& path)
+{
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static std::string find_model()
+{
+    // 1. Environment variable override (exact path)
+    if (const char* env = std::getenv("LIVE_WHISPER_MODEL")) {
+        if (file_exists(env)) return env;
+    }
+
+    // 2. Compile-time install prefix
+    {
+        std::string path = std::string(LIVE_WHISPER_DATADIR) + "/" + MODEL_NAME;
+        if (file_exists(path)) return path;
+    }
+
+    // 3. XDG_DATA_HOME (defaults to ~/.local/share)
+    {
+        std::string base;
+        if (const char* xdg = std::getenv("XDG_DATA_HOME")) {
+            base = xdg;
+        } else if (const char* home = std::getenv("HOME")) {
+            base = std::string(home) + "/.local/share";
+        }
+        if (!base.empty()) {
+            std::string path = base + "/live-whisper/" + MODEL_NAME;
+            if (file_exists(path)) return path;
+        }
+    }
+
+    // 4. System data dirs
+    for (const char* dir : {"/usr/local/share/live-whisper", "/usr/share/live-whisper"}) {
+        std::string path = std::string(dir) + "/" + MODEL_NAME;
+        if (file_exists(path)) return path;
+    }
+
+    // 5. Relative path (development fallback)
+    {
+        std::string path = std::string("models/") + MODEL_NAME;
+        if (file_exists(path)) return path;
+    }
+
+    return {};
+}
 
 static constexpr int    OVERLAY_HEIGHT = 350;
 static constexpr int    SAMPLE_RATE    = 16000;
@@ -95,7 +147,21 @@ int main()
 
     // Init transcriber
     Transcriber transcriber;
-    std::string model_path = "models/ggml-tiny.bin";
+    std::string model_path = find_model();
+    if (model_path.empty()) {
+        std::fprintf(stderr,
+            "Could not find %s. Searched:\n"
+            "  $LIVE_WHISPER_MODEL          (env var, exact path)\n"
+            "  %s/\n"
+            "  $XDG_DATA_HOME/live-whisper/\n"
+            "  /usr/local/share/live-whisper/\n"
+            "  /usr/share/live-whisper/\n"
+            "  models/                       (relative, for development)\n"
+            "\n"
+            "Install with: cmake --install build --prefix ~/.local\n",
+            MODEL_NAME, LIVE_WHISPER_DATADIR);
+        return 1;
+    }
     if (!transcriber.init(model_path)) {
         std::fprintf(stderr, "Failed to init transcriber with %s\n", model_path.c_str());
         return 1;
