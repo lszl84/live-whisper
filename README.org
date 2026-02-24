@@ -1,0 +1,88 @@
+#+TITLE: live-whisper
+#+OPTIONS: toc:nil num:nil
+
+Speech-to-text overlay for Hyprland. Press a hotkey, speak, and paste the
+transcribed text into any window.
+
+[[https://github.com/lszl84/live-whisper/raw/main/demo.gif]]
+
+* How It Works
+
+1. Press a global hotkey (configured in Hyprland)
+2. A layer-shell overlay appears at the bottom of the screen with exclusive keyboard focus
+3. Microphone capture starts immediately, transcription appears live
+4. Edit the text if needed, then:
+   - *Enter* — accept and type text into the previously focused window
+   - *Escape* — cancel and close
+
+Text is typed into the target window via the =zwp_virtual_keyboard_v1= Wayland
+protocol (no external tools like =wtype= needed). Focus capture and restore
+uses =hyprctl=.
+
+* Building
+
+#+begin_src sh
+cmake -B build
+cmake --build build
+#+end_src
+
+The whisper.cpp tiny model (~75 MB) is downloaded automatically on first build.
+
+** System Dependencies
+
+Arch Linux:
+
+#+begin_src sh
+sudo pacman -S wayland wayland-protocols libxkbcommon egl-wayland mesa cmake
+#+end_src
+
+Everything else (whisper.cpp, miniaudio, Dear ImGui) is fetched automatically
+via CMake FetchContent.
+
+Runtime: =hyprctl= (included with Hyprland).
+
+* Hyprland Configuration
+
+#+begin_src conf
+bind = $mod, V, exec, ~/Developer/live-whisper/build/live-whisper
+#+end_src
+
+* Architecture
+
+| Component                  | Role                                        |
+|----------------------------+---------------------------------------------|
+| whisper.cpp (ggml-tiny)    | Speech-to-text inference                    |
+| miniaudio                  | Microphone capture (lock-free ring buffer)  |
+| Dear ImGui                 | Immediate-mode overlay UI                   |
+| wlr-layer-shell-v1         | Overlay surface (exclusive keyboard focus)  |
+| zwp-virtual-keyboard-v1    | Type text into target window                |
+| EGL + OpenGL ES 3.0        | Rendering backend                           |
+| libxkbcommon               | Keyboard/keymap handling                    |
+
+** Streaming via Sliding Window
+
+whisper.cpp is batch-oriented. Live transcription is achieved with a sliding
+window approach:
+
+- Accumulate audio in a 60-second ring buffer
+- Run =whisper_full()= every ~3 seconds on the growing window (up to 30s)
+- On window rollover: commit text, carry forward prompt tokens, keep 5s overlap
+
+** Source Layout
+
+#+begin_src
+src/
+  main.cpp                  — entry point and event loop
+  audio.h / audio.cpp       — miniaudio capture + ring buffer
+  transcriber.h / .cpp      — whisper.cpp sliding window engine
+  overlay.h / overlay.cpp   — Wayland layer-shell surface + EGL + input
+  imgui_impl_wayland.h/.cpp — custom ImGui platform backend for Wayland
+  paste.h / paste.cpp       — virtual keyboard typing + hyprctl focus
+protocol/
+  wlr-layer-shell-unstable-v1.xml
+  virtual-keyboard-unstable-v1.xml
+#+end_src
+
+* License
+
+MIT
