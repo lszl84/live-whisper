@@ -139,6 +139,24 @@ target_include_directories(imgui PUBLIC
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_ES3)
 target_link_libraries(imgui PUBLIC PkgConfig::GLESV2)
 
+# Embedded font (DroidSans from ImGui's bundled fonts)
+set(GEN_DIR ${CMAKE_BINARY_DIR}/gen)
+file(MAKE_DIRECTORY ${GEN_DIR})
+
+find_file(BINARY_TO_COMPRESSED binary_to_compressed_c.cpp
+          PATHS ${imgui_SOURCE_DIR}/misc/fonts)
+add_executable(binary_to_compressed_tool ${BINARY_TO_COMPRESSED})
+
+add_custom_command(
+    OUTPUT  ${GEN_DIR}/gen_font.cpp
+    COMMAND binary_to_compressed_tool
+            ${imgui_SOURCE_DIR}/misc/fonts/DroidSans.ttf
+            gen_font > ${GEN_DIR}/gen_font.cpp
+    DEPENDS binary_to_compressed_tool
+    COMMENT "Generating embedded font"
+)
+add_custom_target(generate_font ALL DEPENDS ${GEN_DIR}/gen_font.cpp)
+
 # ---------------------------------------------------------------------------
 # Model download
 # ---------------------------------------------------------------------------
@@ -167,11 +185,14 @@ add_executable(live-whisper
     src/overlay.cpp
     src/imgui_impl_wayland.cpp
     src/paste.cpp
+    src/font.cpp
 )
+add_dependencies(live-whisper generate_font)
 
 target_include_directories(live-whisper PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
+    ${GEN_DIR}
 )
 
 target_link_libraries(live-whisper PRIVATE

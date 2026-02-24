@@ -48,6 +48,9 @@ struct Overlay::Impl {
     int          configured_width  = 0;
     int          configured_height = 0;
     int          requested_height  = 200;
+    int          scale_factor      = 1;
+    int          output_width      = 0;   // physical output resolution
+    int          output_height     = 0;
     bool         closed            = false;
     bool         configured        = false;
 
@@ -96,6 +99,14 @@ struct Overlay::Impl {
     static void ptr_axis_stop(void*, wl_pointer*, uint32_t, uint32_t) {}
     static void ptr_axis_discrete(void*, wl_pointer*, uint32_t, int32_t) {}
 
+    // Output
+    static void output_geometry(void*, wl_output*, int32_t, int32_t, int32_t,
+                                int32_t, int32_t, const char*, const char*, int32_t) {}
+    static void output_mode(void* data, wl_output*, uint32_t flags,
+                            int32_t width, int32_t height, int32_t);
+    static void output_scale(void* data, wl_output*, int32_t factor);
+    static void output_done(void*, wl_output*) {}
+
     bool init_egl();
 };
 
@@ -138,6 +149,13 @@ static const wl_pointer_listener pointer_listener = {
     Overlay::Impl::ptr_axis_discrete,
 };
 
+static const wl_output_listener output_listener = {
+    Overlay::Impl::output_geometry,
+    Overlay::Impl::output_mode,
+    Overlay::Impl::output_done,
+    Overlay::Impl::output_scale,
+};
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -156,6 +174,11 @@ void Overlay::Impl::registry_global(void* data, wl_registry* reg,
         self->layer_shell = static_cast<zwlr_layer_shell_v1*>(
             wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface,
                              version < 4 ? version : 4));
+    } else if (std::strcmp(iface, wl_output_interface.name) == 0 && !self->output) {
+        self->output = static_cast<wl_output*>(
+            wl_registry_bind(reg, name, &wl_output_interface,
+                             version < 3 ? version : 3));
+        wl_output_add_listener(self->output, &output_listener, self);
     }
 }
 
@@ -176,7 +199,8 @@ void Overlay::Impl::layer_surface_configure(void* data, zwlr_layer_surface_v1* l
         self->init_egl();
     } else if (self->egl_window) {
         wl_egl_window_resize(self->egl_window,
-                             self->configured_width, self->configured_height, 0, 0);
+                             self->configured_width  * self->scale_factor,
+                             self->configured_height * self->scale_factor, 0, 0);
     }
 }
 
@@ -322,6 +346,24 @@ void Overlay::Impl::ptr_axis(void* data, wl_pointer*, uint32_t,
 }
 
 // ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+void Overlay::Impl::output_mode(void* data, wl_output*, uint32_t flags,
+                                 int32_t width, int32_t height, int32_t)
+{
+    if (flags & WL_OUTPUT_MODE_CURRENT) {
+        auto* self = static_cast<Impl*>(data);
+        self->output_width  = width;
+        self->output_height = height;
+    }
+}
+
+void Overlay::Impl::output_scale(void* data, wl_output*, int32_t factor)
+{
+    static_cast<Impl*>(data)->scale_factor = factor;
+}
+
+// ---------------------------------------------------------------------------
 // EGL init
 // ---------------------------------------------------------------------------
 bool Overlay::Impl::init_egl()
@@ -356,9 +398,15 @@ bool Overlay::Impl::init_egl()
     EGLint ctx_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
     egl_context = eglCreateContext(egl_display, config, EGL_NO_CONTEXT, ctx_attribs);
 
-    egl_window = wl_egl_window_create(surface, configured_width, configured_height);
+    // Create EGL window at physical pixel size for crisp rendering
+    int phys_w = configured_width  * scale_factor;
+    int phys_h = configured_height * scale_factor;
+    egl_window = wl_egl_window_create(surface, phys_w, phys_h);
     egl_surface = eglCreateWindowSurface(egl_display, config,
                                          static_cast<EGLNativeWindowType>(egl_window), nullptr);
+
+    // Tell compositor our buffer is at higher resolution
+    wl_surface_set_buffer_scale(surface, scale_factor);
 
     eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
     return true;
@@ -391,7 +439,8 @@ bool Overlay::init(int height)
 
     impl_->registry = wl_display_get_registry(impl_->display);
     wl_registry_add_listener(impl_->registry, &registry_listener, impl_.get());
-    wl_display_roundtrip(impl_->display);
+    wl_display_roundtrip(impl_->display);  // binds globals, adds output listener
+    wl_display_roundtrip(impl_->display);  // receives output mode/scale events
 
     if (!impl_->compositor || !impl_->layer_shell) {
         std::fprintf(stderr, "overlay: missing required globals (compositor=%p, layer_shell=%p)\n",
@@ -403,16 +452,23 @@ bool Overlay::init(int height)
     // Create surface
     impl_->surface = wl_compositor_create_surface(impl_->compositor);
 
+    // Compute overlay size: half the logical output width, centered at bottom
+    int logical_output_w = impl_->output_width / impl_->scale_factor;
+    int overlay_w = logical_output_w / 2;
+    if (overlay_w < 400) overlay_w = 400;  // minimum usable width
+    int margin_bottom = 32;
+
     // Create layer surface
     impl_->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
         impl_->layer_shell, impl_->surface, nullptr,
         ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "live-whisper");
 
+    // Anchor bottom only → compositor centers horizontally
     zwlr_layer_surface_v1_set_anchor(impl_->layer_surface,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-    zwlr_layer_surface_v1_set_size(impl_->layer_surface, 0, height);
+        ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
+    zwlr_layer_surface_v1_set_size(impl_->layer_surface, overlay_w, height);
+    zwlr_layer_surface_v1_set_margin(impl_->layer_surface,
+        0, 0, margin_bottom, 0);
     zwlr_layer_surface_v1_set_keyboard_interactivity(impl_->layer_surface,
         ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
 
@@ -454,6 +510,7 @@ void Overlay::shutdown()
 
     if (impl_->layer_surface) { zwlr_layer_surface_v1_destroy(impl_->layer_surface); impl_->layer_surface = nullptr; }
     if (impl_->surface)       { wl_surface_destroy(impl_->surface);                  impl_->surface = nullptr; }
+    if (impl_->output)        { wl_output_destroy(impl_->output);                    impl_->output = nullptr; }
     if (impl_->seat)          { wl_seat_destroy(impl_->seat);                        impl_->seat = nullptr; }
     if (impl_->layer_shell)   { zwlr_layer_shell_v1_destroy(impl_->layer_shell);     impl_->layer_shell = nullptr; }
     if (impl_->compositor)    { wl_compositor_destroy(impl_->compositor);             impl_->compositor = nullptr; }
@@ -505,8 +562,11 @@ std::vector<WaylandEvent> Overlay::drain_events()
 
 const std::vector<WaylandEvent>& Overlay::peek_events() const { return impl_->events; }
 
-int Overlay::width() const  { return impl_->configured_width; }
-int Overlay::height() const { return impl_->configured_height; }
+int Overlay::width() const     { return impl_->configured_width; }
+int Overlay::height() const    { return impl_->configured_height; }
+int Overlay::fb_width() const  { return impl_->configured_width  * impl_->scale_factor; }
+int Overlay::fb_height() const { return impl_->configured_height * impl_->scale_factor; }
+int Overlay::scale() const     { return impl_->scale_factor; }
 
 bool Overlay::should_close() const { return impl_->closed; }
 void Overlay::request_close()      { impl_->closed = true; }

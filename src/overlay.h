@@ -54,9 +54,16 @@ struct Overlay {
     // Peek at pending events without draining.
     const std::vector<WaylandEvent>& peek_events() const;
 
-    // Display dimensions (updated on configure).
+    // Logical display dimensions (updated on configure).
     int width()  const;
     int height() const;
+
+    // Physical framebuffer dimensions (logical * scale).
+    int fb_width()  const;
+    int fb_height() const;
+
+    // Output scale factor (from wl_output, typically 1 or 2).
+    int scale() const;
 
     bool should_close() const;
     void request_close();

@@ -91,6 +91,8 @@ bool ImGui_ImplWayland::Init(Overlay* overlay)
     io.BackendPlatformName = "imgui_impl_wayland";
     io.DisplaySize = ImVec2(static_cast<float>(overlay->width()),
                             static_cast<float>(overlay->height()));
+    float s = static_cast<float>(overlay->scale());
+    io.DisplayFramebufferScale = ImVec2(s, s);
     return true;
 }
 
@@ -103,9 +105,11 @@ void ImGui_ImplWayland::NewFrame()
 {
     ImGuiIO& io = ImGui::GetIO();
 
-    // Update display size
+    // Update display size (logical) and framebuffer scale
     io.DisplaySize = ImVec2(static_cast<float>(g_overlay->width()),
                             static_cast<float>(g_overlay->height()));
+    float s = static_cast<float>(g_overlay->scale());
+    io.DisplayFramebufferScale = ImVec2(s, s);
 
     // Update delta time
     auto now = std::chrono::steady_clock::now();
