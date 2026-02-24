@@ -2,37 +2,156 @@
 #include "whisper.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
-#include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <fcntl.h>
+#include <vector>
 
-static constexpr int SAMPLE_RATE      = 16000;
-static constexpr int PROCESS_INTERVAL = 2 * SAMPLE_RATE;  // transcribe every ~2s
-static constexpr int OVERLAP_SAMPLES  = SAMPLE_RATE / 2;  // 0.5s audio overlap
+static constexpr int SAMPLE_RATE         = 16000;
+static constexpr int INITIAL_INTERVAL_MS = 300;                  // first partial fires quickly
+static constexpr int STREAM_INTERVAL_MS  = 400;                  // subsequent partials
+static constexpr int MIN_SAMPLES         = SAMPLE_RATE / 4;      // need >= 0.25s of audio
+static constexpr int COMMIT_SAMPLES      = SAMPLE_RATE * 25;     // commit chunk every 25s
+
+static int inference_thread_count() {
+    unsigned n = std::thread::hardware_concurrency();
+    return static_cast<int>(std::max(4u, std::min(n, 16u)));
+}
 
 struct Transcriber::Impl {
     whisper_context* ctx = nullptr;
 
-    // Audio buffer for the current (not yet committed) chunk
-    std::vector<float> chunk_buf;
-    int                samples_since_process = 0;
-
-    // Final committed text (append-only, never re-transcribed)
-    std::string committed_text;
-
-    // Partial text from the current chunk (may change until committed)
-    std::string pending_text;
-
-    // Prompt tokens from last committed chunk for context carry-forward
-    std::vector<whisper_token> prompt_tokens;
+    // Audio buffer — appended by process(), consumed by streaming_loop()
+    std::vector<float> audio_buf;
+    std::mutex         audio_mutex;
 
     // Total samples received (for recording time display)
-    uint64_t total_samples = 0;
+    std::atomic<uint64_t> total_samples{0};
+
+    // Background streaming thread
+    std::thread             thread;
+    std::mutex              stop_mutex;
+    std::condition_variable stop_cv;
+    std::atomic<bool>       running{false};
+    std::atomic<bool>       abort_inference{false};
+
+    // Accumulated committed text (only touched by streaming thread)
+    std::string confirmed_text;
 
     TextCallback callback;
+
+    void streaming_loop();
+    std::string run_whisper(const std::vector<float>& audio);
 };
 
+// ---------------------------------------------------------------------------
+// Run whisper inference, returning concatenated segment text.
+// ---------------------------------------------------------------------------
+std::string Transcriber::Impl::run_whisper(const std::vector<float>& audio) {
+    if (!ctx || audio.empty()) return {};
+
+    whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    params.print_progress   = false;
+    params.print_special    = false;
+    params.print_realtime   = false;
+    params.print_timestamps = false;
+    params.single_segment   = true;
+    params.no_context       = true;
+    params.language         = "en";
+    params.n_threads        = inference_thread_count();
+
+    params.abort_callback = [](void* data) -> bool {
+        return static_cast<Impl*>(data)->abort_inference.load();
+    };
+    params.abort_callback_user_data = this;
+
+    if (abort_inference.load()) return {};
+
+    int ret = whisper_full(ctx, params, audio.data(), static_cast<int>(audio.size()));
+    if (ret != 0) return {};
+
+    std::string text;
+    int n_seg = whisper_full_n_segments(ctx);
+    for (int i = 0; i < n_seg; ++i) {
+        const char* s = whisper_full_get_segment_text(ctx, i);
+        if (s) text += s;
+    }
+    return text;
+}
+
+// ---------------------------------------------------------------------------
+// Background streaming loop (adapted from whisper-agent).
+// Re-transcribes the full growing audio buffer each pass so that repetition
+// loops self-correct with more context.
+// ---------------------------------------------------------------------------
+void Transcriber::Impl::streaming_loop() {
+    bool first_iter = true;
+    std::string last_partial;
+
+    while (running.load()) {
+        int interval = first_iter ? INITIAL_INTERVAL_MS : STREAM_INTERVAL_MS;
+        first_iter = false;
+
+        {
+            std::unique_lock<std::mutex> lk(stop_mutex);
+            stop_cv.wait_for(lk, std::chrono::milliseconds(interval),
+                             [this] { return !running.load(); });
+        }
+        if (!running.load()) break;
+
+        // Snapshot audio buffer. If it exceeds the commit threshold and we
+        // have partial text, save that text as confirmed and clear the buffer.
+        std::vector<float> audio;
+        {
+            std::lock_guard<std::mutex> lk(audio_mutex);
+
+            if (audio_buf.size() > static_cast<size_t>(COMMIT_SAMPLES)
+                && !last_partial.empty())
+            {
+                if (confirmed_text.empty())
+                    confirmed_text = last_partial;
+                else
+                    confirmed_text += " " + last_partial;
+                audio_buf.clear();
+                last_partial.clear();
+            }
+
+            audio = audio_buf;
+        }
+        if (static_cast<int>(audio.size()) < MIN_SAMPLES) continue;
+
+        abort_inference = false;
+        if (!running.load()) break;
+        std::string text = run_whisper(audio);
+        if (abort_inference.load()) break;
+
+        last_partial = text;
+
+        // Build full display text: confirmed chunks + current partial
+        std::string display;
+        if (confirmed_text.empty())
+            display = text;
+        else if (text.empty())
+            display = confirmed_text;
+        else
+            display = confirmed_text + " " + text;
+
+        if (callback)
+            callback(display);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public interface
+// ---------------------------------------------------------------------------
+
 Transcriber::Transcriber() : impl_(std::make_unique<Impl>()) {}
-Transcriber::~Transcriber() { shutdown(); }
+Transcriber::~Transcriber() { stop(); shutdown(); }
 
 bool Transcriber::init(const std::string& model_path)
 {
@@ -53,99 +172,59 @@ void Transcriber::shutdown()
     }
 }
 
-// Run whisper and return concatenated segment text.
-static std::string run_inference(whisper_context* ctx,
-                                 const std::vector<float>& audio,
-                                 const std::vector<whisper_token>& prompt_tokens)
+void Transcriber::start()
 {
-    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    wparams.print_progress   = false;
-    wparams.print_special    = false;
-    wparams.print_realtime   = false;
-    wparams.print_timestamps = false;
-    wparams.single_segment   = false;
-    wparams.no_context       = false;
-    wparams.language         = "en";
+    if (impl_->running.load()) return;
 
-    if (!prompt_tokens.empty()) {
-        wparams.prompt_tokens   = prompt_tokens.data();
-        wparams.prompt_n_tokens = static_cast<int>(prompt_tokens.size());
-    }
-
-    int ret = whisper_full(ctx, wparams,
-                           audio.data(), static_cast<int>(audio.size()));
-    if (ret != 0) return {};
-
-    std::string text;
-    int n_seg = whisper_full_n_segments(ctx);
-    for (int i = 0; i < n_seg; ++i) {
-        const char* s = whisper_full_get_segment_text(ctx, i);
-        if (s) text += s;
-    }
-    return text;
+    impl_->confirmed_text.clear();
+    impl_->abort_inference = false;
+    impl_->running = true;
+    impl_->thread = std::thread([this] { impl_->streaming_loop(); });
 }
 
-// Extract prompt tokens from the last segment for carry-forward.
-static std::vector<whisper_token> extract_prompt_tokens(whisper_context* ctx)
+void Transcriber::stop()
 {
-    std::vector<whisper_token> tokens;
-    int n_seg = whisper_full_n_segments(ctx);
-    if (n_seg > 0) {
-        int last = n_seg - 1;
-        int n_tok = whisper_full_n_tokens(ctx, last);
-        for (int i = 0; i < n_tok; ++i)
-            tokens.push_back(whisper_full_get_token_id(ctx, last, i));
-    }
-    return tokens;
+    if (!impl_->running.load()) return;
+
+    // Suppress whisper's "failed to encode" message from the aborted inference
+    whisper_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
+
+    impl_->running = false;
+    impl_->abort_inference = true;
+    impl_->stop_cv.notify_all();
+
+    if (impl_->thread.joinable())
+        impl_->thread.join();
 }
 
 void Transcriber::process(const float* samples, uint32_t n)
 {
     if (!impl_->ctx || n == 0) return;
 
-    impl_->chunk_buf.insert(impl_->chunk_buf.end(), samples, samples + n);
-    impl_->samples_since_process += static_cast<int>(n);
+    {
+        std::lock_guard<std::mutex> lk(impl_->audio_mutex);
+        impl_->audio_buf.insert(impl_->audio_buf.end(), samples, samples + n);
+    }
     impl_->total_samples += n;
-
-    if (impl_->samples_since_process < PROCESS_INTERVAL) return;
-    impl_->samples_since_process = 0;
-
-    // Run inference on the current chunk
-    std::string text = run_inference(impl_->ctx, impl_->chunk_buf,
-                                     impl_->prompt_tokens);
-
-    // Commit: this chunk's text is final
-    impl_->prompt_tokens = extract_prompt_tokens(impl_->ctx);
-    impl_->committed_text += text;
-    impl_->pending_text.clear();
-
-    // Keep a small audio overlap for continuity, discard the rest
-    int keep = std::min(OVERLAP_SAMPLES, static_cast<int>(impl_->chunk_buf.size()));
-    std::vector<float> tail(impl_->chunk_buf.end() - keep,
-                            impl_->chunk_buf.end());
-    impl_->chunk_buf = std::move(tail);
-
-    if (impl_->callback)
-        impl_->callback(full_text());
 }
 
 std::string Transcriber::full_text() const
 {
-    return impl_->committed_text + impl_->pending_text;
+    return impl_->confirmed_text;
 }
 
 float Transcriber::recording_seconds() const
 {
-    return static_cast<float>(impl_->total_samples) / SAMPLE_RATE;
+    return static_cast<float>(impl_->total_samples.load()) / SAMPLE_RATE;
 }
 
 void Transcriber::reset()
 {
-    impl_->chunk_buf.clear();
-    impl_->committed_text.clear();
-    impl_->pending_text.clear();
-    impl_->prompt_tokens.clear();
-    impl_->samples_since_process = 0;
+    {
+        std::lock_guard<std::mutex> lk(impl_->audio_mutex);
+        impl_->audio_buf.clear();
+    }
+    impl_->confirmed_text.clear();
     impl_->total_samples = 0;
 }
 

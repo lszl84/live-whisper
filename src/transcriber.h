@@ -1,9 +1,13 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 struct Transcriber {
@@ -18,7 +22,11 @@ struct Transcriber {
     bool init(const std::string& model_path);
     void shutdown();
 
-    // Feed audio samples and run inference when enough has accumulated (~3s).
+    // Start/stop the background streaming inference thread.
+    void start();
+    void stop();
+
+    // Feed audio samples (non-blocking — just appends to buffer).
     void process(const float* samples, uint32_t n);
 
     // Get the full transcribed text so far.

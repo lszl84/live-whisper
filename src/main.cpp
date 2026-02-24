@@ -166,6 +166,7 @@ int main()
         std::fprintf(stderr, "Failed to init transcriber with %s\n", model_path.c_str());
         return 1;
     }
+    transcriber.start();
 
     // Init ImGui
     IMGUI_CHECKVERSION();
@@ -305,6 +306,7 @@ int main()
     overlay.shutdown();
 
     audio.shutdown();
+    transcriber.stop();
     transcriber.shutdown();
 
     // Type text if accepted (overlay is gone, target window can receive input)
