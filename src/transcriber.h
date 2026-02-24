@@ -24,6 +24,9 @@ struct Transcriber {
     // Get the full transcribed text so far.
     std::string full_text() const;
 
+    // Total recording time in seconds.
+    float recording_seconds() const;
+
     // Reset all state (clear buffers and text).
     void reset();
 

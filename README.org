@@ -59,14 +59,15 @@ bind = $mod, V, exec, ~/Developer/live-whisper/build/live-whisper
 | EGL + OpenGL ES 3.0        | Rendering backend                           |
 | libxkbcommon               | Keyboard/keymap handling                    |
 
-** Streaming via Sliding Window
+** Streaming via Chunk Commit
 
-whisper.cpp is batch-oriented. Live transcription is achieved with a sliding
-window approach:
+whisper.cpp is batch-oriented. Live transcription is achieved by processing
+audio in chunks:
 
-- Accumulate audio in a 60-second ring buffer
-- Run =whisper_full()= every ~3 seconds on the growing window (up to 30s)
-- On window rollover: commit text, carry forward prompt tokens, keep 5s overlap
+- Accumulate audio and run =whisper_full()= every ~2 seconds
+- Each chunk's text is committed immediately (append-only, never re-transcribed)
+- Prompt tokens from the last segment carry forward for context continuity
+- A 0.5s audio overlap between chunks ensures smooth boundaries
 
 ** Source Layout
 
@@ -85,4 +86,4 @@ protocol/
 
 * License
 
-MIT
+Apache 2.0 — see [[file:LICENSE][LICENSE]].

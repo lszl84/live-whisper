@@ -118,14 +118,19 @@ int main()
     // Text buffer for the editable area
     static char text_buf[64 * 1024] = {};
     bool accepted = false;
+    bool user_edited = false;
+    std::string last_transcription;
 
     // Audio read buffer
     std::vector<float> audio_buf(READ_BUF_SIZE);
 
-    // Live text update callback
+    // Live text update callback — only auto-update if user hasn't manually edited
     transcriber.set_callback([&](const std::string& text) {
-        std::strncpy(text_buf, text.c_str(), sizeof(text_buf) - 1);
-        text_buf[sizeof(text_buf) - 1] = '\0';
+        if (!user_edited) {
+            std::strncpy(text_buf, text.c_str(), sizeof(text_buf) - 1);
+            text_buf[sizeof(text_buf) - 1] = '\0';
+        }
+        last_transcription = text;
     });
 
     // Main loop
@@ -186,12 +191,18 @@ int main()
         // Text area fills remaining space minus status line
         float status_height = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
         float text_height = ImGui::GetContentRegionAvail().y - status_height;
-        ImGui::InputTextMultiline("##text", text_buf, sizeof(text_buf),
-                                  ImVec2(-1.0f, text_height),
-                                  ImGuiInputTextFlags_AllowTabInput);
+        if (ImGui::InputTextMultiline("##text", text_buf, sizeof(text_buf),
+                                      ImVec2(-1.0f, text_height),
+                                      ImGuiInputTextFlags_AllowTabInput)) {
+            // User typed or edited — stop auto-updating
+            user_edited = true;
+        }
 
         // Status line
-        ImGui::TextDisabled("Audio: %u frames buffered", audio.available());
+        float secs = transcriber.recording_seconds();
+        int mins = static_cast<int>(secs) / 60;
+        int s    = static_cast<int>(secs) % 60;
+        ImGui::TextDisabled("Recording %d:%02d", mins, s);
 
         ImGui::End();
 
