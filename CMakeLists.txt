@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(live-whisper LANGUAGES C CXX)
+project(live-whisper VERSION 0.0.1-alpha-gnome LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
@@ -17,11 +17,12 @@ pkg_check_modules(WAYLAND_EGL    REQUIRED IMPORTED_TARGET wayland-egl)
 pkg_check_modules(EGL            REQUIRED IMPORTED_TARGET egl)
 pkg_check_modules(GLESV2         REQUIRED IMPORTED_TARGET glesv2)
 pkg_check_modules(XKBCOMMON      REQUIRED IMPORTED_TARGET xkbcommon)
+pkg_check_modules(DBUS1          REQUIRED IMPORTED_TARGET dbus-1)
 
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
 # ---------------------------------------------------------------------------
-# Generate xdg-shell protocol sources (needed by layer-shell)
+# Generate xdg-shell protocol sources
 # ---------------------------------------------------------------------------
 pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
 set(XDG_XML ${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml)
@@ -42,53 +43,31 @@ add_custom_command(
 )
 
 # ---------------------------------------------------------------------------
-# Generate layer-shell protocol sources
+# Generate xdg-decoration protocol sources (to request no window decorations)
 # ---------------------------------------------------------------------------
-set(PROTO_XML ${CMAKE_SOURCE_DIR}/protocol/wlr-layer-shell-unstable-v1.xml)
-set(PROTO_HDR ${CMAKE_BINARY_DIR}/wlr-layer-shell-unstable-v1-client-protocol.h)
-set(PROTO_SRC ${CMAKE_BINARY_DIR}/wlr-layer-shell-unstable-v1-protocol.c)
+set(XDG_DECORATION_XML ${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml)
+set(XDG_DECORATION_HDR ${CMAKE_BINARY_DIR}/xdg-decoration-unstable-v1-client-protocol.h)
+set(XDG_DECORATION_SRC ${CMAKE_BINARY_DIR}/xdg-decoration-unstable-v1-protocol.c)
 
 add_custom_command(
-    OUTPUT  ${PROTO_HDR}
-    COMMAND ${WAYLAND_SCANNER} client-header ${PROTO_XML} ${PROTO_HDR}
-    COMMAND ${CMAKE_COMMAND} -DHEADER=${PROTO_HDR} -P ${CMAKE_SOURCE_DIR}/cmake/fix-namespace.cmake
-    DEPENDS ${PROTO_XML}
-    COMMENT "Generating layer-shell client header (C++ safe)"
+    OUTPUT  ${XDG_DECORATION_HDR}
+    COMMAND ${WAYLAND_SCANNER} client-header ${XDG_DECORATION_XML} ${XDG_DECORATION_HDR}
+    DEPENDS ${XDG_DECORATION_XML}
+    COMMENT "Generating xdg-decoration client header"
 )
 add_custom_command(
-    OUTPUT  ${PROTO_SRC}
-    COMMAND ${WAYLAND_SCANNER} private-code ${PROTO_XML} ${PROTO_SRC}
-    DEPENDS ${PROTO_XML}
-    COMMENT "Generating layer-shell protocol code"
+    OUTPUT  ${XDG_DECORATION_SRC}
+    COMMAND ${WAYLAND_SCANNER} private-code ${XDG_DECORATION_XML} ${XDG_DECORATION_SRC}
+    DEPENDS ${XDG_DECORATION_XML}
+    COMMENT "Generating xdg-decoration protocol code"
 )
 
-# ---------------------------------------------------------------------------
-# Generate virtual-keyboard protocol sources
-# ---------------------------------------------------------------------------
-set(VKBD_XML ${CMAKE_SOURCE_DIR}/protocol/virtual-keyboard-unstable-v1.xml)
-set(VKBD_HDR ${CMAKE_BINARY_DIR}/virtual-keyboard-unstable-v1-client-protocol.h)
-set(VKBD_SRC ${CMAKE_BINARY_DIR}/virtual-keyboard-unstable-v1-protocol.c)
-
-add_custom_command(
-    OUTPUT  ${VKBD_HDR}
-    COMMAND ${WAYLAND_SCANNER} client-header ${VKBD_XML} ${VKBD_HDR}
-    DEPENDS ${VKBD_XML}
-    COMMENT "Generating virtual-keyboard client header"
-)
-add_custom_command(
-    OUTPUT  ${VKBD_SRC}
-    COMMAND ${WAYLAND_SCANNER} private-code ${VKBD_XML} ${VKBD_SRC}
-    DEPENDS ${VKBD_XML}
-    COMMENT "Generating virtual-keyboard protocol code"
-)
-
-add_library(wlr-layer-shell-protocol STATIC
-    ${PROTO_SRC} ${PROTO_HDR}
+add_library(wayland-protocols STATIC
     ${XDG_SRC} ${XDG_HDR}
-    ${VKBD_SRC} ${VKBD_HDR}
+    ${XDG_DECORATION_SRC} ${XDG_DECORATION_HDR}
 )
-target_include_directories(wlr-layer-shell-protocol PUBLIC ${CMAKE_BINARY_DIR})
-target_link_libraries(wlr-layer-shell-protocol PUBLIC PkgConfig::WAYLAND_CLIENT)
+target_include_directories(wayland-protocols PUBLIC ${CMAKE_BINARY_DIR})
+target_link_libraries(wayland-protocols PUBLIC PkgConfig::WAYLAND_CLIENT)
 
 # ---------------------------------------------------------------------------
 # FetchContent dependencies
@@ -107,7 +86,7 @@ set(WHISPER_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(whisper)
 
-# miniaudio (header-only — skip its CMakeLists, we just need the header)
+# miniaudio (header-only)
 FetchContent_Declare(
     miniaudio
     GIT_REPOSITORY https://github.com/mackron/miniaudio.git
@@ -202,12 +181,13 @@ target_link_libraries(live-whisper PRIVATE
     whisper
     miniaudio_hdr
     imgui
-    wlr-layer-shell-protocol
+    wayland-protocols
     PkgConfig::WAYLAND_CLIENT
     PkgConfig::WAYLAND_EGL
     PkgConfig::EGL
     PkgConfig::GLESV2
     PkgConfig::XKBCOMMON
+    PkgConfig::DBUS1
     pthread
     dl
     m
@@ -222,3 +202,7 @@ target_compile_definitions(live-whisper PRIVATE
 # ---------------------------------------------------------------------------
 install(TARGETS live-whisper RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES ${MODEL_FILE} DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/live-whisper)
+
+# GNOME Shell extension for text injection
+install(DIRECTORY extension/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/gnome-shell/extensions/live-whisper@local
+        FILES_MATCHING PATTERN "*.json" PATTERN "*.js")

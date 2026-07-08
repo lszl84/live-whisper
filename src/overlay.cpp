@@ -5,7 +5,8 @@
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 
-#include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 
 #include <cstdio>
 #include <cstring>
@@ -26,8 +27,10 @@ struct Overlay::Impl {
     wl_seat*                seat        = nullptr;
     wl_surface*             surface     = nullptr;
     wl_output*              output      = nullptr;
-    zwlr_layer_shell_v1*    layer_shell = nullptr;
-    zwlr_layer_surface_v1*  layer_surface = nullptr;
+    xdg_wm_base*            wm_base     = nullptr;
+    zxdg_decoration_manager_v1* deco_mgr    = nullptr;
+    xdg_surface*            xdg_surface_obj = nullptr;
+    xdg_toplevel*           xdg_toplevel_obj = nullptr;
 
     // Input
     wl_keyboard*            keyboard    = nullptr;
@@ -63,10 +66,18 @@ struct Overlay::Impl {
                                 uint32_t name, const char* iface, uint32_t version);
     static void registry_global_remove(void*, wl_registry*, uint32_t) {}
 
-    // Layer surface
-    static void layer_surface_configure(void* data, zwlr_layer_surface_v1* ls,
-                                        uint32_t serial, uint32_t w, uint32_t h);
-    static void layer_surface_closed(void* data, zwlr_layer_surface_v1*);
+    // XDG shell
+    static void wm_base_ping(void* data, xdg_wm_base* wm_base, uint32_t serial);
+
+    // XDG toplevel
+    static void toplevel_configure(void* data, xdg_toplevel* tl,
+                                   int32_t w, int32_t h, wl_array* states);
+    static void toplevel_close(void* data, xdg_toplevel* tl);
+    static void toplevel_configure_bounds(void* data, xdg_toplevel* tl,
+                                          int32_t w, int32_t h) {}
+
+    // XDG surface
+    static void xdg_surface_configure(void* data, xdg_surface* s, uint32_t serial);
 
     // Seat
     static void seat_capabilities(void* data, wl_seat* s, uint32_t caps);
@@ -118,9 +129,18 @@ static const wl_registry_listener registry_listener = {
     Overlay::Impl::registry_global_remove,
 };
 
-static const zwlr_layer_surface_v1_listener layer_surface_listener = {
-    Overlay::Impl::layer_surface_configure,
-    Overlay::Impl::layer_surface_closed,
+static const xdg_wm_base_listener wm_base_listener = {
+    Overlay::Impl::wm_base_ping,
+};
+
+static const xdg_toplevel_listener toplevel_listener = {
+    Overlay::Impl::toplevel_configure,
+    Overlay::Impl::toplevel_close,
+    Overlay::Impl::toplevel_configure_bounds,
+};
+
+static const xdg_surface_listener xdg_surface_listener = {
+    Overlay::Impl::xdg_surface_configure,
 };
 
 static const wl_seat_listener seat_listener = {
@@ -170,10 +190,13 @@ void Overlay::Impl::registry_global(void* data, wl_registry* reg,
         self->seat = static_cast<wl_seat*>(
             wl_registry_bind(reg, name, &wl_seat_interface, 5));
         wl_seat_add_listener(self->seat, &seat_listener, self);
-    } else if (std::strcmp(iface, zwlr_layer_shell_v1_interface.name) == 0) {
-        self->layer_shell = static_cast<zwlr_layer_shell_v1*>(
-            wl_registry_bind(reg, name, &zwlr_layer_shell_v1_interface,
-                             version < 4 ? version : 4));
+    } else if (std::strcmp(iface, xdg_wm_base_interface.name) == 0) {
+        self->wm_base = static_cast<xdg_wm_base*>(
+            wl_registry_bind(reg, name, &xdg_wm_base_interface, 4));
+        xdg_wm_base_add_listener(self->wm_base, &wm_base_listener, self);
+    } else if (std::strcmp(iface, zxdg_decoration_manager_v1_interface.name) == 0) {
+        self->deco_mgr = static_cast<zxdg_decoration_manager_v1*>(
+            wl_registry_bind(reg, name, &zxdg_decoration_manager_v1_interface, 1));
     } else if (std::strcmp(iface, wl_output_interface.name) == 0 && !self->output) {
         self->output = static_cast<wl_output*>(
             wl_registry_bind(reg, name, &wl_output_interface,
@@ -183,13 +206,25 @@ void Overlay::Impl::registry_global(void* data, wl_registry* reg,
 }
 
 // ---------------------------------------------------------------------------
-// Layer surface
+// XDG shell
 // ---------------------------------------------------------------------------
-void Overlay::Impl::layer_surface_configure(void* data, zwlr_layer_surface_v1* ls,
-                                             uint32_t serial, uint32_t w, uint32_t h)
+void Overlay::Impl::wm_base_ping(void* data, xdg_wm_base* wm_base, uint32_t serial)
+{
+    xdg_wm_base_pong(wm_base, serial);
+}
+
+// ---------------------------------------------------------------------------
+// XDG toplevel
+// ---------------------------------------------------------------------------
+void Overlay::Impl::toplevel_configure(void* data, xdg_toplevel* /*tl*/,
+                                        int32_t w, int32_t h, wl_array* /*states*/)
 {
     auto* self = static_cast<Impl*>(data);
-    zwlr_layer_surface_v1_ack_configure(ls, serial);
+
+    // Zero-sized configure means the compositor doesn't have a preference;
+    // use our own defaults.
+    if (w == 0) w = 600;
+    if (h == 0) h = self->requested_height;
 
     self->configured_width  = static_cast<int>(w);
     self->configured_height = static_cast<int>(h);
@@ -204,9 +239,14 @@ void Overlay::Impl::layer_surface_configure(void* data, zwlr_layer_surface_v1* l
     }
 }
 
-void Overlay::Impl::layer_surface_closed(void* data, zwlr_layer_surface_v1*)
+void Overlay::Impl::toplevel_close(void* data, xdg_toplevel* /*tl*/)
 {
     static_cast<Impl*>(data)->closed = true;
+}
+
+void Overlay::Impl::xdg_surface_configure(void* data, xdg_surface* s, uint32_t serial)
+{
+    xdg_surface_ack_configure(s, serial);
 }
 
 // ---------------------------------------------------------------------------
@@ -442,38 +482,49 @@ bool Overlay::init(int height)
     wl_display_roundtrip(impl_->display);  // binds globals, adds output listener
     wl_display_roundtrip(impl_->display);  // receives output mode/scale events
 
-    if (!impl_->compositor || !impl_->layer_shell) {
-        std::fprintf(stderr, "overlay: missing required globals (compositor=%p, layer_shell=%p)\n",
+    if (!impl_->compositor || !impl_->wm_base) {
+        std::fprintf(stderr, "overlay: missing required globals (compositor=%p, wm_base=%p)\n",
                      static_cast<void*>(impl_->compositor),
-                     static_cast<void*>(impl_->layer_shell));
+                     static_cast<void*>(impl_->wm_base));
         return false;
     }
 
     // Create surface
     impl_->surface = wl_compositor_create_surface(impl_->compositor);
 
-    // Compute overlay size: half the logical output width, centered at bottom
+    // Create XDG surface + toplevel
+    impl_->xdg_surface_obj = xdg_wm_base_get_xdg_surface(
+        impl_->wm_base, impl_->surface);
+    if (!impl_->xdg_surface_obj) {
+        std::fprintf(stderr, "overlay: xdg_wm_base_get_xdg_surface failed\n");
+        return false;
+    }
+    xdg_surface_add_listener(impl_->xdg_surface_obj, &xdg_surface_listener, impl_.get());
+
+    impl_->xdg_toplevel_obj = xdg_surface_get_toplevel(impl_->xdg_surface_obj);
+    if (!impl_->xdg_toplevel_obj) {
+        std::fprintf(stderr, "overlay: xdg_surface_get_toplevel failed\n");
+        return false;
+    }
+    xdg_toplevel_add_listener(impl_->xdg_toplevel_obj, &toplevel_listener, impl_.get());
+
+    // Set window properties
+    xdg_toplevel_set_title(impl_->xdg_toplevel_obj, "live-whisper");
+    xdg_toplevel_set_app_id(impl_->xdg_toplevel_obj, "live-whisper");
+
+    // Request no server-side window decorations (bare overlay)
+    if (impl_->deco_mgr) {
+        auto* deco = zxdg_decoration_manager_v1_get_toplevel_decoration(
+            impl_->deco_mgr, impl_->xdg_toplevel_obj);
+        zxdg_toplevel_decoration_v1_set_mode(deco,
+            ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    }
+
+    // Hint a reasonable minimum size for the overlay
+    // (compositor may use these as initial size hints on some implementations)
     int logical_output_w = impl_->output_width / impl_->scale_factor;
     int overlay_w = logical_output_w / 2;
-    if (overlay_w < 600) overlay_w = 600;  // minimum usable width
-    int margin_bottom = 32;
-
-    // Create layer surface
-    impl_->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-        impl_->layer_shell, impl_->surface, nullptr,
-        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "live-whisper");
-
-    // Anchor bottom only → compositor centers horizontally
-    zwlr_layer_surface_v1_set_anchor(impl_->layer_surface,
-        ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
-    zwlr_layer_surface_v1_set_size(impl_->layer_surface, overlay_w, height);
-    zwlr_layer_surface_v1_set_margin(impl_->layer_surface,
-        0, 0, margin_bottom, 0);
-    zwlr_layer_surface_v1_set_keyboard_interactivity(impl_->layer_surface,
-        ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE);
-
-    zwlr_layer_surface_v1_add_listener(impl_->layer_surface,
-                                        &layer_surface_listener, impl_.get());
+    if (overlay_w < 600) overlay_w = 600;
 
     wl_surface_commit(impl_->surface);
     wl_display_roundtrip(impl_->display);
@@ -508,13 +559,15 @@ void Overlay::shutdown()
     if (impl_->keyboard) { wl_keyboard_destroy(impl_->keyboard); impl_->keyboard = nullptr; }
     if (impl_->pointer)  { wl_pointer_destroy(impl_->pointer);   impl_->pointer = nullptr; }
 
-    if (impl_->layer_surface) { zwlr_layer_surface_v1_destroy(impl_->layer_surface); impl_->layer_surface = nullptr; }
-    if (impl_->surface)       { wl_surface_destroy(impl_->surface);                  impl_->surface = nullptr; }
-    if (impl_->output)        { wl_output_destroy(impl_->output);                    impl_->output = nullptr; }
-    if (impl_->seat)          { wl_seat_destroy(impl_->seat);                        impl_->seat = nullptr; }
-    if (impl_->layer_shell)   { zwlr_layer_shell_v1_destroy(impl_->layer_shell);     impl_->layer_shell = nullptr; }
-    if (impl_->compositor)    { wl_compositor_destroy(impl_->compositor);             impl_->compositor = nullptr; }
-    if (impl_->registry)      { wl_registry_destroy(impl_->registry);                impl_->registry = nullptr; }
+    if (impl_->xdg_toplevel_obj)  { xdg_toplevel_destroy(impl_->xdg_toplevel_obj);   impl_->xdg_toplevel_obj = nullptr; }
+    if (impl_->xdg_surface_obj)   { xdg_surface_destroy(impl_->xdg_surface_obj);     impl_->xdg_surface_obj = nullptr; }
+    if (impl_->surface)           { wl_surface_destroy(impl_->surface);               impl_->surface = nullptr; }
+    if (impl_->output)            { wl_output_destroy(impl_->output);                 impl_->output = nullptr; }
+    if (impl_->seat)              { wl_seat_destroy(impl_->seat);                     impl_->seat = nullptr; }
+    if (impl_->deco_mgr)          { zxdg_decoration_manager_v1_destroy(impl_->deco_mgr);    impl_->deco_mgr = nullptr; }
+    if (impl_->wm_base)           { xdg_wm_base_destroy(impl_->wm_base);             impl_->wm_base = nullptr; }
+    if (impl_->compositor)        { wl_compositor_destroy(impl_->compositor);         impl_->compositor = nullptr; }
+    if (impl_->registry)          { wl_registry_destroy(impl_->registry);             impl_->registry = nullptr; }
 
     if (impl_->display) {
         wl_display_disconnect(impl_->display);

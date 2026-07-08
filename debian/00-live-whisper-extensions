@@ -1,0 +1,5 @@
+# Enable the live-whisper GNOME Shell extension by default for all users.
+# See: https://help.gnome.org/admin/system-admin-guide/stable/extensions-enable.html
+
+[org/gnome/shell]
+enabled-extensions=['live-whisper@local']

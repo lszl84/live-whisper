@@ -1,0 +1,7 @@
+live-whisper (0.0.1-alpha-gnome-1) unstable; urgency=medium
+
+  * Initial GNOME Shell extension-based release.
+  * Auto-enable extension on first run.
+  * D-Bus text injection backend.
+
+ -- lszl84 <lszl84@users.noreply.github.com>  Thu, 10 Jul 2025 00:00:00 +0000

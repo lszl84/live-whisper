@@ -1,0 +1,39 @@
+Source: live-whisper
+Section: sound
+Priority: optional
+Maintainer: lszl84 <lszl84@users.noreply.github.com>
+Build-Depends:
+ cmake (>= 3.20),
+ debhelper-compat (= 13),
+ libdbus-1-dev,
+ libegl-dev,
+ libgles2-dev,
+ libwayland-dev,
+ libwayland-egl1,
+ libxkbcommon-dev,
+ pkg-config,
+ wayland-protocols,
+Standards-Version: 4.6.2
+Homepage: https://github.com/lszl84/live-whisper
+Rules-Requires-Root: no
+
+Package: live-whisper
+Architecture: linux-any
+Depends:
+ dbus,
+ gnome-shell (>= 45),
+ hyprctl,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends: gnome-shell-extension-prefs
+Description: Speech-to-text overlay for GNOME Shell
+ Press a hotkey, speak, and the transcribed text is typed into the
+ previously focused window. Uses Whisper.cpp for on-device speech
+ recognition and a GNOME Shell extension for text injection.
+ .
+ Features:
+  * Real-time streaming transcription
+  * Editable text area with word wrap
+  * Auto-enter support
+  * Dark themed overlay
+  * No external typing tools required

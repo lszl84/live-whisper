@@ -1,0 +1,8 @@
+{
+  "name": "Live Whisper Integration",
+  "description": "Text injection helper for live-whisper speech-to-text overlay. Exposes a D-Bus API so live-whisper can type transcribed text into the focused window.",
+  "uuid": "live-whisper@local",
+  "shell-version": ["45", "46", "47", "48", "50"],
+  "url": "https://github.com/lszl84/live-whisper",
+  "version": 1
+}

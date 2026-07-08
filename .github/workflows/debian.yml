@@ -1,0 +1,106 @@
+name: Build deb package
+
+on:
+  push:
+    branches: [gnome, main]
+  pull_request:
+    branches: [gnome, main]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            cmake \
+            curl \
+            libdbus-1-dev \
+            libegl-dev \
+            libegl1 \
+            libgles2-dev \
+            libwayland-bin \
+            libwayland-dev \
+            libwayland-egl1 \
+            libxkbcommon-dev \
+            pkg-config \
+            wayland-protocols
+
+      - name: Configure and build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --build build -j$(nproc)
+
+      - name: Stage files
+        run: |
+          PKG_ROOT="$PWD/pkg"
+          DESTDIR="$PKG_ROOT" cmake --install build --prefix /usr
+
+          # Copy debian packaging helpers
+          install -D -m 0644 debian/00-live-whisper-extensions \
+            "$PKG_ROOT/usr/share/glib-2.0/schemas/00-live-whisper-extensions.gschema.override"
+
+      - name: Build .deb
+        run: |
+          PKG_ROOT="$PWD/pkg"
+          mkdir -p "$PKG_ROOT/DEBIAN"
+
+          # Control file
+          cat > "$PKG_ROOT/DEBIAN/control" << 'CONTROL'
+Package: live-whisper
+Version: 0.0.1-alpha-gnome-1
+Section: sound
+Priority: optional
+Architecture: amd64
+Maintainer: lszl84 <lszl84@users.noreply.github.com>
+Depends: dbus, gnome-shell (>= 45), ${shlibs:Depends}
+Recommends: gnome-shell-extension-prefs
+Homepage: https://github.com/lszl84/live-whisper
+Description: Speech-to-text overlay for GNOME Shell
+ Press a hotkey, speak, and the transcribed text is typed
+ into the previously focused window. Uses Whisper.cpp for
+ on-device speech recognition and a GNOME Shell extension
+ for text injection.
+CONTROL
+
+          # postinst — enable the extension
+          cat > "$PKG_ROOT/DEBIAN/postinst" << 'POSTINST'
+#!/bin/sh
+set -e
+case "$1" in
+    configure)
+        if which glib-compile-schemas >/dev/null 2>&1; then
+            glib-compile-schemas /usr/share/glib-2.0/schemas/ 2>/dev/null || true
+        fi
+        if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+            gdbus call --session \
+                --dest org.gnome.Shell \
+                --object-path /org/gnome/Shell \
+                --method org.gnome.Shell.Extensions.EnableExtension \
+                "live-whisper@local" 2>/dev/null || true
+        fi
+        ;;
+esac
+exit 0
+POSTINST
+          chmod 0755 "$PKG_ROOT/DEBIAN/postinst"
+
+          # Compute shlibs dependencies
+          dpkg-shlibdeps -O "$PKG_ROOT/usr/bin/live-whisper" 2>/dev/null | \
+            sed "s/shlibs:Depends=//" > /tmp/shlibs_deps
+          SHLIBS=$(cat /tmp/shlibs_deps)
+          sed -i "s/\${shlibs:Depends}/$SHLIBS/" "$PKG_ROOT/DEBIAN/control"
+
+          # Build the .deb
+          mkdir -p dist
+          dpkg-deb --build "$PKG_ROOT" "dist/live-whisper_0.0.1-alpha-gnome-1_amd64.deb"
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-whisper-0.0.1-alpha-gnome
+          path: dist/*.deb

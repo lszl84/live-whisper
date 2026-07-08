@@ -126,10 +126,91 @@ static void apply_style(float scale)
     c[ImGuiCol_NavHighlight]      = ImVec4(0.30f, 0.50f, 0.80f, 1.00f);
 }
 
+static void show_message_overlay(const char* title, const char* message)
+{
+    Overlay overlay;
+    if (!overlay.init(150)) return;
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+
+    float scale = static_cast<float>(overlay.scale());
+    if (scale < 1.0f) scale = 1.0f;
+    apply_style(scale);
+    ImGui::UseCustomFont(io, BASE_FONT_SIZE * scale);
+
+    ImGui_ImplWayland::Init(&overlay);
+    ImGui_ImplOpenGL3_Init("#version 300 es");
+
+    while (overlay.dispatch()) {
+        for (const auto& ev : overlay.peek_events()) {
+            if (ev.type == EventType::Key && ev.pressed &&
+                (ev.keysym == XKB_KEY_Escape || ev.keysym == XKB_KEY_Return ||
+                 ev.keysym == XKB_KEY_KP_Enter))
+                overlay.request_close();
+        }
+
+        overlay.make_current();
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplWayland::NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGui::Begin("##overlay", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.60f, 1.0f));
+        ImGui::Text("%s", title);
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", message);
+        ImGui::Spacing();
+        ImGui::TextDisabled("Press Enter or Escape to close.");
+
+        ImGui::End();
+
+        glViewport(0, 0, overlay.fb_width(), overlay.fb_height());
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        overlay.swap_buffers();
+    }
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplWayland::Shutdown();
+    ImGui::DestroyContext();
+    overlay.shutdown();
+}
+
 int main()
 {
-    // Capture focus before overlay appears
-    std::string focus_addr = paste::capture_focus();
+    // Auto-enable the GNOME Shell extension if needed.
+    // The extension provides the D-Bus text-injection service.
+    if (!paste::is_available()) {
+        paste::try_enable_extension();
+        // Wait up to ~3 s for the extension to load and claim the bus name.
+        for (int i = 0; i < 6 && !paste::is_available(); i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    }
+
+    if (!paste::is_available()) {
+        show_message_overlay(
+            "Setup Required",
+            "GNOME Shell extension could not be loaded.\n"
+            "Make sure live-whisper@local is installed in\n"
+            "~/.local/share/gnome-shell/extensions/ and try:\n"
+            "  gnome-extensions enable live-whisper@local");
+        return 0;
+    }
 
     // Init overlay
     Overlay overlay;
@@ -309,13 +390,13 @@ int main()
     transcriber.stop();
     transcriber.shutdown();
 
-    // Type text if accepted (overlay is gone, target window can receive input)
+    // Type text if accepted.
+    // The paste backend tries: virtual-keyboard -> ydotool -> wtype -> clipboard.
+    // On GNOME/Mutter, clipboard is the reliable fallback (then Ctrl+V to paste).
     if (accepted && text_buf[0] != '\0') {
-        paste::refocus_and_type(focus_addr, text_buf);
-        if (auto_enter) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            paste::type_text("\n");
-        }
+        std::string output(text_buf);
+        if (auto_enter) output += '\n';
+        paste::type_text(output);
     }
 
     return 0;
