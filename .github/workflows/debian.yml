@@ -40,26 +40,42 @@ jobs:
           PKG_ROOT="$PWD/pkg"
           DESTDIR="$PKG_ROOT" cmake --install build --prefix /usr
 
-          # Install the GNOME Shell schema override so the extension
-          # is automatically enabled for all users.
+          # Install the GNOME Shell schema override
           install -D -m 0644 debian/00-live-whisper-extensions \
             "$PKG_ROOT/usr/share/glib-2.0/schemas/00-live-whisper-extensions.gschema.override"
 
-          # Copy deb helpers from the repo
+          # Copy postinst
           mkdir -p "$PKG_ROOT/DEBIAN"
-          cp debian/control   "$PKG_ROOT/DEBIAN/control"
-          cp debian/postinst  "$PKG_ROOT/DEBIAN/postinst"
+          cp debian/postinst "$PKG_ROOT/DEBIAN/postinst"
           chmod 0755 "$PKG_ROOT/DEBIAN/postinst"
 
-      - name: Compute shared library deps and build .deb
+      - name: Compute deps and assemble .deb
         run: |
           PKG_ROOT="$PWD/pkg"
 
-          # Substitute shlibs dependencies into control
+          # Compute shlibs dependencies
           SHLIBS=$(dpkg-shlibdeps -O "$PKG_ROOT/usr/bin/live-whisper" 2>/dev/null \
-                   | sed "s/shlibs:Depends=//")
-          sed -i "s/\${shlibs:Depends}/$SHLIBS/" "$PKG_ROOT/DEBIAN/control"
+                   | sed 's/^shlibs:Depends=//')
 
+          # Write control file with resolved dependencies
+          cat > "$PKG_ROOT/DEBIAN/control" <<- CONTROL
+          Package: live-whisper
+          Version: 0.0.1-alpha-gnome-1
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Maintainer: lszl84 <lszl84@users.noreply.github.com>
+          Depends: dbus, gnome-shell (>= 45), ${SHLIBS}
+          Recommends: gnome-shell-extension-prefs
+          Homepage: https://github.com/lszl84/live-whisper
+          Description: Speech-to-text overlay for GNOME Shell
+           Press a hotkey, speak, and the transcribed text is typed
+           into the previously focused window. Uses Whisper.cpp for
+           on-device speech recognition and a GNOME Shell extension
+           for text injection.
+          CONTROL
+
+          # Build the .deb
           mkdir -p dist
           dpkg-deb --build "$PKG_ROOT" \
             "dist/live-whisper_0.0.1-alpha-gnome-1_amd64.deb"
