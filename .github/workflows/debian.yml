@@ -51,11 +51,17 @@ jobs:
 
       - name: Compute deps and assemble .deb
         run: |
+          set -x
           PKG_ROOT="$PWD/pkg"
 
           # Compute shlibs dependencies
-          SHLIBS=$(dpkg-shlibdeps -O "$PKG_ROOT/usr/bin/live-whisper" 2>/dev/null \
-                   | sed 's/^shlibs:Depends=//')
+          SHLIBS=$(dpkg-shlibdeps -O "$PKG_ROOT/usr/bin/live-whisper" | sed 's/^shlibs:Depends=//')
+
+          # Fallback if dpkg-shlibdeps failed
+          if [ -z "$SHLIBS" ]; then
+            echo "dpkg-shlibdeps failed, using fallback deps"
+            SHLIBS="libc6, libdbus-1-3, libegl1, libgcc-s1, libgles2, libstdc++6, libwayland-client0, libwayland-egl1, libxkbcommon0"
+          fi
 
           # Write control file with resolved dependencies
           cat > "$PKG_ROOT/DEBIAN/control" <<- CONTROL
