@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(live-whisper VERSION 0.0.1-alpha-gnome LANGUAGES C CXX)
+project(live-whisper VERSION 0.0.1 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
