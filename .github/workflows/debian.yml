@@ -22,7 +22,7 @@ jobs:
             libdbus-1-dev \
             libegl-dev \
             libegl1 \
-            libgles2-dev \
+            libgles-dev \
             libwayland-bin \
             libwayland-dev \
             libwayland-egl1 \
